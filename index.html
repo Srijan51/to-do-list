@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Weekly Tasks with Pie Progress</title>
+  <title>To Do List</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700;800&display=swap" rel="stylesheet">
@@ -25,6 +25,11 @@
         <button class="theme-button" data-theme="dark" title="Dark theme">Dark</button>
         <button class="theme-button" data-theme="zen" title="Zen theme">Zen</button>
       </div>
+      <div class="backup-buttons" role="group" aria-label="Backup">
+        <button id="export" class="button-secondary" title="Export your data(Backup)">Export</button>
+        <button id="import" class="button-secondary" title="Import data from a JSON backup">Import</button>
+        <input id="importFile" type="file" accept="application/json,.json" style="display:none" />
+      </div>
       <button id="resetWeek" title="Clear all tasks for the week" class="btn btn-ghost">Refresh Week</button>
     </div>
   </header>
@@ -37,8 +42,8 @@
 
   <footer>
     <div class="footer-inner">
-      <small>Data stored locally in your browser (key: <code>weekTasks_v1</code>). Use "Refresh Week" to clear the week.</small>
-      <div class="palette-note">Completed tasks render as colored slices — each task gets its own color.</div>
+      <small>Use "Refresh Week" to clear the week.</small>
+      <div class="palette-note">Completed tasks render as colored slices each task gets its own color.</div>
     </div>
   </footer>
 

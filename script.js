@@ -8,6 +8,10 @@ let weekTasks = loadTasks();
 
 const weekGrid = document.getElementById('weekGrid');
 const resetBtn = document.getElementById('resetWeek');
+// Support both legacy and current IDs for export/import buttons
+const exportBtn = document.getElementById('exportJson') || document.getElementById('export');
+const importBtn = document.getElementById('importJson') || document.getElementById('import');
+const importFile = document.getElementById('importFile');
 const THEME_KEY = 'weekTheme_v1';
 const COLLAPSE_KEY = 'collapsedDays_v1';
 const ACCENTS_KEY = 'accentColors_v1';
@@ -50,7 +54,8 @@ DAYS.forEach((day, idx) => {
   const card = createDayCard(day, idx);
   weekGrid.appendChild(card);
   renderTasks(idx);
-  updateProgress(idx);
+  // Batch summary update to avoid flicker during initial load
+  updateProgress(idx, false);
 });
 
 // Build the mobile day picker (compact mobile layout)
@@ -59,13 +64,133 @@ buildDayPicker();
 applyMobileState(MOBILE_MQ.matches);
 try { MOBILE_MQ.addEventListener('change', (e)=> applyMobileState(e.matches)); } catch { /* Safari fallback */ MOBILE_MQ.addListener((e)=> applyMobileState(e.matches)); }
 
-resetBtn.addEventListener('click', () => {
-  if(!confirm('Clear all tasks for the week?')) return;
+resetBtn.addEventListener('click', async () => {
+  const ok = await showConfirm({
+    title: 'Refresh week',
+    message: 'Clear all tasks for the current week? This cannot be undone.',
+    confirmText: 'Refresh',
+    cancelText: 'Cancel',
+    tone: 'danger'
+  });
+  if(!ok) return;
   weekTasks = DAYS.map(()=>[]);
   saveTasks();
   // re-render all
-  DAYS.forEach((_,i)=>{ renderTasks(i); updateProgress(i); });
+  DAYS.forEach((_,i)=>{ renderTasks(i); updateProgress(i, false); });
+  // one-time summary recompute to prevent repeated DOM churn
+  updateSummary();
+  showToast('Week refreshed! All tasks cleared.', 'success', 3200);
 });
+
+// Backup: export/import
+function buildBackup(){
+  const theme = (()=>{ try { return localStorage.getItem(THEME_KEY) || 'light'; } catch { return 'light'; } })();
+  return {
+    version: 2,
+    exportedAt: new Date().toISOString(),
+    theme,
+    weekTasks,
+    accentColors,
+    collapsedDays
+  };
+}
+
+function triggerDownload(filename, text){
+  const blob = new Blob([text], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=> URL.revokeObjectURL(url), 1000);
+}
+
+if(exportBtn){
+  exportBtn.addEventListener('click', ()=>{
+    const data = buildBackup();
+    const d = new Date();
+    const dateStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    triggerDownload(`week-task-backup-${dateStr}.json`, JSON.stringify(data, null, 2));
+    showToast('Backup exported as JSON.', 'success', 2600);
+  });
+}
+
+// Returns true if import applied without critical issues
+async function applyImport(obj){
+  // Basic validation and normalization
+  if(!obj || typeof obj !== 'object') throw new Error('Invalid backup file');
+  if(!Array.isArray(obj.weekTasks) || obj.weekTasks.length !== 7) throw new Error('Invalid tasks in backup');
+  // Assign theme
+  if(obj.theme){ applyTheme(obj.theme); }
+  // Replace in-memory structures
+  weekTasks = obj.weekTasks.map(dayArr => Array.isArray(dayArr) ? dayArr.map(t => ({
+    text: t.text || '',
+    done: !!t.done,
+    deadline: t.deadline,
+    subtasks: Array.isArray(t.subtasks) ? t.subtasks.map(s=>({ text: s.text||'', done: !!s.done })) : [],
+    archived: !!t.archived,
+    color: t.color || undefined
+  })) : []);
+  // Update settings
+  const acc = obj.accentColors && typeof obj.accentColors==='object' ? obj.accentColors : {};
+  const col = obj.collapsedDays && typeof obj.collapsedDays==='object' ? obj.collapsedDays : {};
+  // mutate existing objects to keep references used elsewhere
+  Object.keys(accentColors).forEach(k=> delete accentColors[k]);
+  Object.assign(accentColors, acc);
+  Object.keys(collapsedDays).forEach(k=> delete collapsedDays[k]);
+  Object.assign(collapsedDays, col);
+  // Persist
+  saveTasks();
+  saveJson(ACCENTS_KEY, accentColors);
+  saveJson(COLLAPSE_KEY, collapsedDays);
+  // Re-render all UI defensively to avoid bubbling errors
+  try {
+    const cards = document.querySelectorAll('.card');
+    cards.forEach((card, i)=>{
+      // apply accent
+      const color = accentColors[i] || PALETTE[i % PALETTE.length];
+      if(card && typeof card.style?.setProperty === 'function'){
+        card.style.setProperty('--day-accent', color);
+      }
+      const grad = document.getElementById(`ring-grad-${i}`);
+      if(grad){ const stops = grad.querySelectorAll('stop'); if(stops[0]) stops[0].setAttribute('stop-color', color); if(stops[1]) stops[1].setAttribute('stop-color', color); }
+      // collapsed
+      const btn = card.querySelector('.icon-btn.ghost');
+      if(collapsedDays[i]){ card.classList.add('collapsed'); if(btn) btn.textContent = '▸'; } else { card.classList.remove('collapsed'); if(btn) btn.textContent = '▾'; }
+      // tasks and progress
+      renderTasks(i);
+      updateProgress(i, false);
+    });
+    updateSummary();
+  } catch (e) {
+    console.error('Post-import render had an issue (import still applied).', e);
+    // Import is still considered successful at data level
+  }
+  return true;
+}
+
+if(importBtn && importFile){
+  importBtn.addEventListener('click', ()=> importFile.click());
+  importFile.addEventListener('change', async ()=>{
+    const file = importFile.files && importFile.files[0];
+    if(!file) return;
+    try {
+      const text = await file.text();
+      const obj = JSON.parse(text);
+      const ok = await showConfirm({ title:'Import backup', message:'This will replace your current data. Continue?', confirmText:'Import', cancelText:'Cancel', tone:'danger' });
+      if(!ok) return;
+      const applied = await applyImport(obj);
+      if(applied){
+        showToast('Backup imported successfully.', 'success', 3000);
+      } else {
+        showToast('Imported with minor issues. Data restored.', 'success', 3200);
+      }
+    } catch (e){
+      console.error(e);
+      showToast('Failed to import backup.', 'error', 3500);
+    } finally {
+      importFile.value = '';
+    }
+  });
+}
 
 // functions
 function createDayCard(dayName, dayIndex){
@@ -118,7 +243,11 @@ function createDayCard(dayName, dayIndex){
   btnClear.addEventListener('click', ()=>{
     const tasks = weekTasks[dayIndex] || [];
     if(tasks.length===0) return;
-    weekTasks[dayIndex] = tasks.filter(t=>!t.done);
+    // Archive tasks that are done instead of deleting them so the pie/percent remains accurate
+    weekTasks[dayIndex] = tasks.map(t=>{
+      if(t.done){ return { ...t, archived: true }; }
+      return t;
+    });
     saveTasks();
     renderTasks(dayIndex);
     updateProgress(dayIndex);
@@ -209,6 +338,8 @@ function createDayCard(dayName, dayIndex){
   ring.setAttribute('fill','none');
   ring.setAttribute('stroke', `url(#${gradId})`);
   ring.setAttribute('stroke-width', '2');
+
+  // (removed extra progress ring to keep focus on horizontal percentage graphs)
 
   // group to hold slices (each slice is a sector path)
   const slicesGroup = document.createElementNS(svgNS,'g');
@@ -369,31 +500,44 @@ function renderTasks(dayIndex){
   const listEl = document.getElementById(`tasks-${dayIndex}`);
   listEl.innerHTML='';
   const tasks = weekTasks[dayIndex] || [];
-  if(tasks.length===0){
+  const visible = tasks.filter(t=>!t.archived);
+  if(visible.length===0){
     const e = document.createElement('div'); e.className='empty'; e.textContent='No tasks yet';
     listEl.appendChild(e);
     return;
   }
   let dragSrcIndex = null;
-  tasks.forEach((t, i)=>{
+  const indexMap = [];
+  visible.forEach((t, i)=>{
+    const originalIndex = tasks.indexOf(t);
+    indexMap[i] = originalIndex;
     const row = document.createElement('div'); row.className='task';
     row.setAttribute('draggable','true');
     row.dataset.index = String(i);
-    const cb = document.createElement('input'); cb.type='checkbox'; cb.checked = !!t.done; cb.id = `d${dayIndex}-t${i}`;
+    row.dataset.originalIndex = String(originalIndex);
+    const cb = document.createElement('input'); cb.type='checkbox'; cb.checked = !!t.done; cb.id = `d${dayIndex}-t${originalIndex}`;
     cb.addEventListener('change', ()=>{
       // if subtasks exist, toggle them to match parent
       if (Array.isArray(t.subtasks) && t.subtasks.length>0) {
         t.subtasks = t.subtasks.map(s=>({ ...s, done: cb.checked }));
       }
-      weekTasks[dayIndex][i].done = cb.checked;
+      weekTasks[dayIndex][originalIndex].done = cb.checked;
       saveTasks();
       renderTasks(dayIndex);
       updateProgress(dayIndex);
     });
 
     // color swatch to match slice color
-    const swatch = document.createElement('span'); swatch.className = 'swatch';
-    swatch.style.background = PALETTE[i % PALETTE.length];
+    const colorInp = document.createElement('input');
+    colorInp.type = 'color';
+    colorInp.className = 'task-color';
+    colorInp.title = 'Task color';
+    colorInp.value = t.color || PALETTE[originalIndex % PALETTE.length];
+    colorInp.addEventListener('input', ()=>{
+      weekTasks[dayIndex][originalIndex].color = colorInp.value;
+      saveTasks();
+      updateProgress(dayIndex);
+    });
 
   const label = document.createElement('label'); label.htmlFor = cb.id; label.textContent = t.text;
     if(t.done){ label.style.textDecoration='line-through'; label.style.opacity='0.6'; } else { label.style.textDecoration='none'; label.style.opacity='1'; }
@@ -460,22 +604,22 @@ function renderTasks(dayIndex){
       const arr = Array.isArray(t.subtasks) ? t.subtasks : (t.subtasks = []);
       arr.forEach((st, si)=>{
         const srow = document.createElement('div'); srow.className='subtask-row';
-        const sc = document.createElement('input'); sc.type='checkbox'; sc.checked=!!st.done; sc.id=`sd${dayIndex}-t${i}-s${si}`;
+        const sc = document.createElement('input'); sc.type='checkbox'; sc.checked=!!st.done; sc.id=`sd${dayIndex}-t${originalIndex}-s${si}`;
         const sl = document.createElement('label'); sl.htmlFor=sc.id; sl.textContent=st.text;
         sc.addEventListener('change', ()=>{
-          weekTasks[dayIndex][i].subtasks[si].done = sc.checked;
+          weekTasks[dayIndex][originalIndex].subtasks[si].done = sc.checked;
           // auto parent completion: all subtasks done => parent done
-          const allDone = weekTasks[dayIndex][i].subtasks.length>0 && weekTasks[dayIndex][i].subtasks.every(x=>x.done);
-          weekTasks[dayIndex][i].done = allDone;
+          const allDone = weekTasks[dayIndex][originalIndex].subtasks.length>0 && weekTasks[dayIndex][originalIndex].subtasks.every(x=>x.done);
+          weekTasks[dayIndex][originalIndex].done = allDone;
           saveTasks();
           renderTasks(dayIndex);
           updateProgress(dayIndex);
         });
         const delS = document.createElement('button'); delS.type='button'; delS.className='del-subtask'; delS.title='Remove subtask'; delS.textContent='✕';
         delS.addEventListener('click', ()=>{
-          weekTasks[dayIndex][i].subtasks.splice(si,1);
-          const allDone = weekTasks[dayIndex][i].subtasks.length>0 && weekTasks[dayIndex][i].subtasks.every(x=>x.done);
-          weekTasks[dayIndex][i].done = allDone ? true : false;
+          weekTasks[dayIndex][originalIndex].subtasks.splice(si,1);
+          const allDone = weekTasks[dayIndex][originalIndex].subtasks.length>0 && weekTasks[dayIndex][originalIndex].subtasks.every(x=>x.done);
+          weekTasks[dayIndex][originalIndex].done = allDone ? true : false;
           saveTasks();
           renderTasks(dayIndex);
           updateProgress(dayIndex);
@@ -489,8 +633,8 @@ function renderTasks(dayIndex){
       sadd.addEventListener('click', ()=>{
         const val = sinput.value && sinput.value.trim();
         if(!val) return;
-        if(!Array.isArray(weekTasks[dayIndex][i].subtasks)) weekTasks[dayIndex][i].subtasks = [];
-        weekTasks[dayIndex][i].subtasks.push({ text: val, done: false });
+        if(!Array.isArray(weekTasks[dayIndex][originalIndex].subtasks)) weekTasks[dayIndex][originalIndex].subtasks = [];
+        weekTasks[dayIndex][originalIndex].subtasks.push({ text: val, done: false });
         saveTasks();
         renderTasks(dayIndex);
         updateProgress(dayIndex);
@@ -502,9 +646,9 @@ function renderTasks(dayIndex){
     });
 
     const del = document.createElement('button'); del.className='del'; del.title='Delete task'; del.innerHTML='✕';
-    del.addEventListener('click', ()=>{ weekTasks[dayIndex].splice(i,1); saveTasks(); renderTasks(dayIndex); updateProgress(dayIndex); });
+    del.addEventListener('click', ()=>{ weekTasks[dayIndex].splice(originalIndex,1); saveTasks(); renderTasks(dayIndex); updateProgress(dayIndex); });
 
-    row.appendChild(swatch);
+    row.appendChild(colorInp);
     row.appendChild(cb);
     row.appendChild(label);
     row.appendChild(deadlineBtn);
@@ -512,19 +656,22 @@ function renderTasks(dayIndex){
     row.appendChild(del);
     // Drag & drop handlers
     row.addEventListener('dragstart', (e)=>{
-      dragSrcIndex = i;
+      dragSrcIndex = originalIndex;
       row.classList.add('dragging');
-      try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', String(i)); } catch {}
+      try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', String(originalIndex)); } catch {}
     });
     row.addEventListener('dragover', (e)=>{ e.preventDefault(); row.classList.add('drop-over'); });
     row.addEventListener('dragleave', ()=>{ row.classList.remove('drop-over'); });
     row.addEventListener('drop', (e)=>{
       e.preventDefault(); row.classList.remove('drop-over');
-      const targetIndex = Number(row.dataset.index);
-      if(dragSrcIndex===null || isNaN(targetIndex) || dragSrcIndex===targetIndex) return;
+      const targetOriginal = Number(row.dataset.originalIndex);
+      if(dragSrcIndex===null || isNaN(targetOriginal) || dragSrcIndex===targetOriginal) return;
       const arr = weekTasks[dayIndex];
       const [moved] = arr.splice(dragSrcIndex,1);
-      arr.splice(targetIndex,0,moved);
+      // adjust insertion index if removing earlier element
+      let insertAt = targetOriginal;
+      if(dragSrcIndex < targetOriginal) insertAt = targetOriginal - 1;
+      arr.splice(insertAt,0,moved);
       saveTasks();
       renderTasks(dayIndex);
       updateProgress(dayIndex);
@@ -534,10 +681,10 @@ function renderTasks(dayIndex){
   });
 }
 
-function updateProgress(dayIndex){
+function updateProgress(dayIndex, doSummary = true){
   const tasks = weekTasks[dayIndex] || [];
-  const done = tasks.filter(t=>t.done).length;
-  const total = tasks.length;
+  const done = tasks.filter(t=>t.done).length; // includes archived
+  const total = tasks.length; // includes archived
   const pct = total===0?0:Math.round((done/total)*100);
 
   // find corresponding card
@@ -553,7 +700,14 @@ function updateProgress(dayIndex){
   const statsPill = card.querySelector(`#count-${dayIndex}`);
   if(statsPill) statsPill.textContent = `${done} / ${total}`;
   const miniBar = card.querySelector(`#mini-${dayIndex}`);
-  if(miniBar) miniBar.style.width = `${pct}%`;
+  if(miniBar){
+    miniBar.style.width = `${pct}%`;
+    miniBar.dataset.pct = `${pct}%`;
+    miniBar.setAttribute('role','progressbar');
+    miniBar.setAttribute('aria-valuemin','0');
+    miniBar.setAttribute('aria-valuemax','100');
+    miniBar.setAttribute('aria-valuenow', String(pct));
+  }
 
   // draw solid slices for each completed task. Each task occupies a slice of angle = 360/total
   const slicesGroup = card.querySelector(`#slices-${dayIndex}`);
@@ -599,9 +753,9 @@ function updateProgress(dayIndex){
     const pathD = describeSector(50, 50, 45, startAngle, endAngle);
     const path = document.createElementNS('http://www.w3.org/2000/svg','path');
     path.setAttribute('d', pathD);
-    const color = PALETTE[i % PALETTE.length];
+    const color = (t.color && /^#?[0-9a-fA-F]{3,8}$/.test(t.color)) ? t.color : PALETTE[i % PALETTE.length];
     path.setAttribute('fill', color);
-    path.setAttribute('class', 'slice');
+  path.setAttribute('class', 'slice');
 
 	if (t.done) {
 		path.classList.add('done');
@@ -610,17 +764,28 @@ function updateProgress(dayIndex){
 	}
 
     // accessibility & tooltip
-    path.setAttribute('role','button');
-    path.setAttribute('tabindex','0');
-    path.setAttribute('aria-label', `Toggle task: ${t.text}`);
+    if(!t.archived){
+      path.setAttribute('role','button');
+      path.setAttribute('tabindex','0');
+      path.setAttribute('aria-label', `Toggle task: ${t.text}`);
+    } else {
+      path.setAttribute('aria-label', `Archived task: ${t.text}`);
+    }
     // native tooltip in SVG
     const titleEl = document.createElementNS('http://www.w3.org/2000/svg','title');
-    titleEl.textContent = t.text;
+    titleEl.textContent = t.archived ? `(Archived) ${t.text}` : t.text;
     path.appendChild(titleEl);
     // make interactive: click toggles that task
-    path.style.cursor = 'pointer';
-    path.addEventListener('click', ()=>{ weekTasks[dayIndex][i].done = !weekTasks[dayIndex][i].done; saveTasks(); renderTasks(dayIndex); updateProgress(dayIndex); });
-    path.addEventListener('keydown', (ev)=>{ if(ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); path.click(); } });
+    if(!t.archived){
+      path.style.cursor = 'pointer';
+      path.addEventListener('click', ()=>{ weekTasks[dayIndex][i].done = !weekTasks[dayIndex][i].done; saveTasks(); renderTasks(dayIndex); updateProgress(dayIndex); });
+      path.addEventListener('keydown', (ev)=>{ if(ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); path.click(); } });
+    } else {
+      path.style.cursor = 'default';
+      path.style.opacity = t.done ? 1 : 0.5;
+      path.style.filter = 'saturate(0.9)';
+      path.style.pointerEvents = 'none';
+    }
     // small animation delay so slices appear in order
     path.style.transitionDelay = `${0.03 * i}s`;
     slicesGroup.appendChild(path);
@@ -630,8 +795,8 @@ function updateProgress(dayIndex){
 
   // update center "done / total"
   if(pctElSmall) pctElSmall.textContent = `${done} / ${total}`;
-  // update weekly summary
-  updateSummary();
+  // update weekly summary once unless explicitly suppressed in batch
+  if (doSummary) updateSummary();
 }
 
 function saveTasks(){
@@ -669,13 +834,22 @@ function buildSummaryCard(){
   summary.className = 'summary-card card';
   const stats = document.createElement('div'); stats.className = 'summary-stats';
   stats.innerHTML = `
-    <div class="metric"><span id="sumTotal">0/0</span><small>Total</small></div>
-    <div class="metric"><span id="sumPct">0%</span><small>Overall</small></div>
-    <div class="metric"><span id="sumBest">-</span><small>Best day</small></div>
+    <div class="metric" id="sumTotalWrap">
+      <div class="metric-icon" aria-hidden="true">📊</div>
+      <span class="metric-value" id="sumTotal">0/0</span>
+      <small class="metric-label">Total</small>
+    </div>
+    <div class="metric hot" id="sumPctWrap">
+      <div class="metric-icon" aria-hidden="true">⚡</div>
+      <span class="metric-value" id="sumPct">0%</span>
+      <small class="metric-label">Overall</small>
+    </div>
   `;
   const bars = document.createElement('div'); bars.className = 'summary-bars';
   DAYS.forEach((d,i)=>{
     const row = document.createElement('div'); row.className='bar-row';
+    row.id = `row-${i}`;
+    row.dataset.day = String(i);
     row.innerHTML = `
       <span class="label">${d.slice(0,3)}</span>
       <div class="bar"><div class="fill" id="bar-${i}"></div></div>
@@ -692,7 +866,6 @@ function buildSummaryCard(){
 
 function updateSummary(){
   let overallDone = 0, overallTotal = 0;
-  let bestIdx = -1; let bestPct = -1;
   DAYS.forEach((_,i)=>{
     const tasks = weekTasks[i] || [];
     const done = tasks.filter(t=>t.done).length;
@@ -701,19 +874,114 @@ function updateSummary(){
     overallDone += done; overallTotal += total;
     const fill = document.getElementById(`bar-${i}`);
     const val = document.getElementById(`bar-val-${i}`);
-    if(fill) fill.style.width = pct+'%';
+    if(fill){
+      fill.style.width = pct+'%';
+      fill.dataset.pct = pct+'%';
+      const acc = (accentColors && accentColors[i] ? accentColors[i] : PALETTE[i % PALETTE.length]);
+      fill.style.setProperty('--bar-accent', acc);
+      // Show inline label only when there is enough space inside the bar
+      fill.classList.toggle('show-label', pct >= 18);
+    }
     if(val) val.textContent = pct+'%';
-    if(pct > bestPct){ bestPct = pct; bestIdx = i; }
   });
   const sumTotal = document.getElementById('sumTotal');
   const sumPct = document.getElementById('sumPct');
-  const sumBest = document.getElementById('sumBest');
   if(sumTotal) sumTotal.textContent = `${overallDone}/${overallTotal}`;
   if(sumPct) sumPct.textContent = overallTotal===0 ? '0%' : Math.round((overallDone/overallTotal)*100)+'%';
-  if(sumBest) sumBest.textContent = bestIdx>=0 ? DAYS[bestIdx] : '-';
+
+  // Highlight only today row
+  const todayIdx = (new Date()).getDay();
+  DAYS.forEach((_,i)=>{
+    const row = document.getElementById(`row-${i}`);
+    if(row){
+      row.classList.toggle('today', i === todayIdx);
+    }
+  });
+  const summary = document.getElementById('summaryCard');
+  if(summary){
+    const todayAcc = (accentColors && accentColors[todayIdx]) ? accentColors[todayIdx] : PALETTE[todayIdx % PALETTE.length];
+    summary.style.setProperty('--overall-accent', todayAcc);
+  }
 }
 
 // expose small helpers for debugging in console
 window.__weekTasks = weekTasks;
 window.saveWeek = ()=>{ saveTasks(); alert('Saved'); };
 window.clearWeek = ()=>{ localStorage.removeItem(STORAGE_KEY); location.reload(); };
+
+// Toasts
+function ensureToastContainer(){
+  let container = document.getElementById('toastContainer');
+  if(!container){
+    container = document.createElement('div');
+    container.id = 'toastContainer';
+    container.className = 'toast-container';
+    const stack = document.createElement('div');
+    stack.className = 'stack';
+    container.appendChild(stack);
+    document.body.appendChild(container);
+  }
+  return container.querySelector('.stack');
+}
+
+function showToast(message, type = 'success', duration = 3000){
+  const stack = ensureToastContainer();
+  const toast = document.createElement('div');
+  toast.className = `toast ${type}`;
+  toast.setAttribute('role','status');
+  toast.setAttribute('aria-live','polite');
+  const icon = document.createElement('span'); icon.className='icon'; icon.textContent = type === 'error' ? '⚠' : '✓';
+  const msg = document.createElement('span'); msg.className='msg'; msg.textContent = message;
+  const close = document.createElement('button'); close.className='close'; close.setAttribute('aria-label','Dismiss'); close.textContent='✕';
+  const remove = () => { toast.classList.remove('show'); setTimeout(()=> toast.remove(), 250); };
+  close.addEventListener('click', ()=>{ clearTimeout(timer); remove(); });
+  toast.appendChild(icon); toast.appendChild(msg); toast.appendChild(close);
+  stack.appendChild(toast);
+  // allow CSS transition
+  requestAnimationFrame(()=> toast.classList.add('show'));
+  const timer = setTimeout(remove, duration);
+}
+
+// Styled confirm modal
+function showConfirm({ title = 'Confirm', message = 'Are you sure?', confirmText = 'Confirm', cancelText = 'Cancel', tone = 'primary' } = {}){
+  return new Promise(resolve => {
+    const active = document.activeElement;
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.setAttribute('role','dialog');
+    overlay.setAttribute('aria-modal','true');
+
+    const modal = document.createElement('div');
+    modal.className = 'modal';
+    const h = document.createElement('h3'); h.className='title'; h.textContent = title;
+    const p = document.createElement('p'); p.className='body'; p.textContent = message;
+    const actions = document.createElement('div'); actions.className='actions';
+    const cancel = document.createElement('button'); cancel.type='button'; cancel.className='button-secondary'; cancel.textContent = cancelText;
+    const confirm = document.createElement('button'); confirm.type='button'; confirm.textContent = confirmText;
+    if(tone === 'danger'){ confirm.className = 'button-danger'; } else { /* primary */ }
+    actions.appendChild(cancel); actions.appendChild(confirm);
+    modal.appendChild(h); modal.appendChild(p); modal.appendChild(actions);
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+
+    // show with transition
+    requestAnimationFrame(()=> overlay.classList.add('show'));
+
+    const cleanup = (val)=>{
+      overlay.classList.remove('show');
+      setTimeout(()=>{ overlay.remove(); if(active && active.focus) active.focus(); }, 150);
+      resolve(val);
+    };
+
+    cancel.addEventListener('click', ()=> cleanup(false));
+    confirm.addEventListener('click', ()=> cleanup(true));
+    overlay.addEventListener('click', (e)=>{ if(e.target === overlay) cleanup(false); });
+    document.addEventListener('keydown', function onKey(e){
+      if(!document.body.contains(overlay)) { document.removeEventListener('keydown', onKey); return; }
+      if(e.key === 'Escape'){ e.preventDefault(); cleanup(false); document.removeEventListener('keydown', onKey); }
+      if(e.key === 'Enter'){ e.preventDefault(); cleanup(true); document.removeEventListener('keydown', onKey); }
+    });
+    // focus first action
+    cancel.focus();
+  });
+}
