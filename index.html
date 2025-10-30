@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Weekly Tasks with Pie Progress</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <!-- Use a modern system font stack; optionally add Google Fonts if desired -->
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="background-shapes" aria-hidden="true"></div>
+  <header class="topbar">
+    <div class="title-wrap">
+      <h1>Weekly Task Tracker</h1>
+      <p class="subtitle">Add tasks per day
+      </p>
+    </div>
+    <div class="controls">
+      <div class="theme-buttons" role="group" aria-label="Theme">
+        <button class="theme-button" data-theme="light" title="Light theme">Light</button>
+        <button class="theme-button" data-theme="dark" title="Dark theme">Dark</button>
+        <button class="theme-button" data-theme="zen" title="Zen theme">Zen</button>
+      </div>
+      <button id="resetWeek" title="Clear all tasks for the week" class="btn btn-ghost">Refresh Week</button>
+    </div>
+  </header>
+
+  <main>
+    <section id="weekGrid" class="week-grid" aria-live="polite">
+      <!-- Day cards will be injected here by script.js -->
+    </section>
+  </main>
+
+  <footer>
+    <div class="footer-inner">
+      <small>Data stored locally in your browser (key: <code>weekTasks_v1</code>). Use "Refresh Week" to clear the week.</small>
+      <div class="palette-note">Completed tasks render as colored slices — each task gets its own color.</div>
+    </div>
+  </footer>
+
+  <script src="script.js"></script>
+</body>
+</html>
