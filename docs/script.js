@@ -683,9 +683,11 @@ function renderTasks(dayIndex){
 
 function updateProgress(dayIndex, doSummary = true){
   const tasks = weekTasks[dayIndex] || [];
-  const done = tasks.filter(t=>t.done).length; // includes archived
-  const total = tasks.length; // includes archived
-  const pct = total===0?0:Math.round((done/total)*100);
+  // For the pie and day card, EXCLUDE archived tasks
+  const visible = tasks.map((t,i)=>({ t, i })).filter(x => !x.t.archived);
+  const doneVis = visible.filter(x=>x.t.done).length;
+  const totalVis = visible.length;
+  const pct = totalVis===0 ? 0 : Math.round((doneVis/totalVis)*100);
 
   // find corresponding card
   const card = document.querySelector(`.card[data-day='${dayIndex}']`);
@@ -698,7 +700,7 @@ function updateProgress(dayIndex, doSummary = true){
   if(pctLabel) pctLabel.textContent = `${pct}%`;
   // update stats pill and mini progress
   const statsPill = card.querySelector(`#count-${dayIndex}`);
-  if(statsPill) statsPill.textContent = `${done} / ${total}`;
+  if(statsPill) statsPill.textContent = `${doneVis} / ${totalVis}`;
   const miniBar = card.querySelector(`#mini-${dayIndex}`);
   if(miniBar){
     miniBar.style.width = `${pct}%`;
@@ -714,7 +716,7 @@ function updateProgress(dayIndex, doSummary = true){
   // clear existing slices
   while(slicesGroup && slicesGroup.firstChild) slicesGroup.removeChild(slicesGroup.firstChild);
 
-  if(total === 0){
+  if(totalVis === 0){
     // nothing to draw — ensure center shows 0/0 and 0%
     if(pctElBig) pctElBig.textContent = `0%`;
     if(pctElSmall) pctElSmall.textContent = `0 / 0`;
@@ -746,8 +748,8 @@ function updateProgress(dayIndex, doSummary = true){
     return d;
   }
 
-  const sliceAngle = 360 / total;
-  tasks.forEach((t, i) => {
+  const sliceAngle = 360 / totalVis;
+  visible.forEach(({t, i: originalIndex}, i) => {
     const startAngle = i * sliceAngle;
     const endAngle = startAngle + sliceAngle;
     const pathD = describeSector(50, 50, 45, startAngle, endAngle);
@@ -764,28 +766,17 @@ function updateProgress(dayIndex, doSummary = true){
 	}
 
     // accessibility & tooltip
-    if(!t.archived){
-      path.setAttribute('role','button');
-      path.setAttribute('tabindex','0');
-      path.setAttribute('aria-label', `Toggle task: ${t.text}`);
-    } else {
-      path.setAttribute('aria-label', `Archived task: ${t.text}`);
-    }
+    path.setAttribute('role','button');
+    path.setAttribute('tabindex','0');
+    path.setAttribute('aria-label', `Toggle task: ${t.text}`);
     // native tooltip in SVG
     const titleEl = document.createElementNS('http://www.w3.org/2000/svg','title');
-    titleEl.textContent = t.archived ? `(Archived) ${t.text}` : t.text;
+    titleEl.textContent = t.text;
     path.appendChild(titleEl);
     // make interactive: click toggles that task
-    if(!t.archived){
-      path.style.cursor = 'pointer';
-      path.addEventListener('click', ()=>{ weekTasks[dayIndex][i].done = !weekTasks[dayIndex][i].done; saveTasks(); renderTasks(dayIndex); updateProgress(dayIndex); });
-      path.addEventListener('keydown', (ev)=>{ if(ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); path.click(); } });
-    } else {
-      path.style.cursor = 'default';
-      path.style.opacity = t.done ? 1 : 0.5;
-      path.style.filter = 'saturate(0.9)';
-      path.style.pointerEvents = 'none';
-    }
+    path.style.cursor = 'pointer';
+    path.addEventListener('click', ()=>{ weekTasks[dayIndex][originalIndex].done = !weekTasks[dayIndex][originalIndex].done; saveTasks(); renderTasks(dayIndex); updateProgress(dayIndex); });
+    path.addEventListener('keydown', (ev)=>{ if(ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); path.click(); } });
     // small animation delay so slices appear in order
     path.style.transitionDelay = `${0.03 * i}s`;
     slicesGroup.appendChild(path);
@@ -794,7 +785,7 @@ function updateProgress(dayIndex, doSummary = true){
   });
 
   // update center "done / total"
-  if(pctElSmall) pctElSmall.textContent = `${done} / ${total}`;
+  if(pctElSmall) pctElSmall.textContent = `${doneVis} / ${totalVis}`;
   // update weekly summary once unless explicitly suppressed in batch
   if (doSummary) updateSummary();
 }
