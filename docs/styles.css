@@ -201,6 +201,21 @@ body {
 /* --- Layout --- */
 .container { max-width: 800px; margin: 20px auto; }
 
+/* Topbar layout and responsive controls */
+.topbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 12px; }
+.topbar .title-wrap { flex: 1 1 240px; min-width: 200px; }
+.topbar .controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; flex: 1 1 320px; }
+.topbar .controls .theme-buttons,
+.topbar .controls .backup-buttons { display: flex; flex-wrap: wrap; gap: 6px; }
+#resetWeek { max-width: 100%; }
+
+@media (max-width: 600px) {
+	.topbar { flex-direction: column; align-items: stretch; gap: 10px; padding: 8px; }
+	.topbar .controls { flex-direction: column; align-items: stretch; }
+	.topbar .controls > * { width: 100%; }
+	#resetWeek { width: 100%; }
+}
+
 /* Week grid for task tracker */
 .week-grid { display: grid; grid-template-columns: repeat(2, minmax(280px, 1fr)); gap: 16px; padding: 0 16px; }
 
